@@ -270,6 +270,10 @@ pub fn run_node_helper<'a>(
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::time::Duration;
+    use std::time::Instant;
+    use std::thread::sleep;
+
     struct MyTask<T: Send + Sync>
         where T: Fn() -> bool,
     {
@@ -300,9 +304,10 @@ mod test {
         }
     }
 
-    fn make_root_node_with_series<'a>(
+    fn make_root_node_with_list<'a>(
         series_size: usize,
         task: &'a dyn Task,
+        is_series: bool,
         name_vec: &'a mut Vec<&str>,
     ) -> Node<'a> {
         let mut root = Node::default();
@@ -316,7 +321,11 @@ mod test {
             task_node.task = Some(task);
             node_vec.push(task_node);
         }
-        root.ntype = NodeTypeSeries(node_vec);
+        if is_series {
+            root.ntype = NodeTypeSeries(node_vec);
+        } else {
+            root.ntype = NodeTypeParallel(node_vec);
+        }
         root
     }
 
@@ -347,7 +356,7 @@ mod test {
         let mut mycontext = GlobalContext::default();
         let mytask = MyTask { cb: || true };
         let mut strvec = vec![];
-        let root = make_root_node_with_series(3, &mytask, &mut strvec);
+        let root = make_root_node_with_list(3, &mytask, true, &mut strvec);
         let (result, _) = run_node_helper(&root, &mut mycontext);
         assert_eq!(result, true);
     }
@@ -357,7 +366,7 @@ mod test {
         let mut mycontext = GlobalContext::default();
         let mytask = MyTask { cb: || true };
         let mut strvec = vec!["a", "b", "c", "d", "e"];
-        let mut root = make_root_node_with_series(5, &mytask, &mut strvec);
+        let mut root = make_root_node_with_list(5, &mytask, true, &mut strvec);
 
         // the third task should fail, so the global
         // context should not have d because d never gets ran
@@ -373,5 +382,49 @@ mod test {
         // to modify context?
         assert!(mycontext.variables.contains_key("a"));
         assert!(mycontext.variables.contains_key("b"));
+    }
+
+    #[test]
+    fn returns_true_if_all_tasks_succeed_in_parallel() {
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask { cb: || true };
+        let mut strvec = vec!["a", "b", "c", "d", "e"];
+        let root = make_root_node_with_list(5, &mytask, false, &mut strvec);
+
+        let (result, _) = run_node_helper(&root, &mut mycontext);
+        assert_eq!(result, true);
+    }
+
+    #[test]
+    fn parallel_is_not_a_liar() {
+        // run in series with a 0.1 second delay on 5 items
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask { cb: || {
+            sleep(Duration::from_millis(100));
+            true
+        } };
+        let mut strvec = vec!["a", "b", "c", "d", "e"];
+        let root = make_root_node_with_list(5, &mytask, true, &mut strvec);
+        let mut timer = Instant::now();
+        let (result, _) = run_node_helper(&root, &mut mycontext);
+        let duration = timer.elapsed().as_millis();
+        assert_eq!(result, true);
+        assert!(duration >= 500);
+
+        // now do the same but in parallel. the duration should
+        // be about 100ms
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask { cb: || {
+            sleep(Duration::from_millis(100));
+            true
+        } };
+        let mut strvec = vec!["a", "b", "c", "d", "e"];
+        let root = make_root_node_with_list(5, &mytask, false, &mut strvec);
+        let mut timer = Instant::now();
+        let (result, _) = run_node_helper(&root, &mut mycontext);
+        let duration = timer.elapsed().as_millis();
+        assert_eq!(result, true);
+        assert!(duration >= 100);
+        assert!(duration < 400);
     }
 }
