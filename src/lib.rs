@@ -1,5 +1,5 @@
 use crossbeam_utils::thread;
-use std::{fmt::{DebugStruct, Debug}, collections::HashMap};
+use std::collections::HashMap;
 
 pub trait Task: Send + Sync {
     /// given the node and the current global context (for read only)
@@ -184,6 +184,7 @@ pub fn run_node_task<'a>(
     mut_global_context: &mut Option<&'a mut GlobalContext>,
 ) -> (bool, Option<Vec<ContextDiff>>) {
     match node.task {
+        None => (false, None),
         Some(cb) => {
             let (success, context_diff) = if let Some(mgc) = mut_global_context {
                 cb.run(node, *mgc)
@@ -218,12 +219,17 @@ pub fn run_node_task<'a>(
             // so no point in telling our caller to modify for us
             (success, None)
         },
-        // TODO: change this to false.
-        // its only true for debugging
-        None => (true, None),
     }
 }
 
+// this should really be private, but I thought maybe I might need it to be public
+// at some point ¯\_(ツ)_/¯
+// run_node is a recursive fn that will take a context (both as a mutable reference
+// and immutable reference which point to the same thing), and iterate through
+// the node higherarchy and on each leaf node (that is a task node) it will
+// do node.task.run() and modify the global context if mutable, otherwise
+// it will return a vector of diffs to the caller for the caller to apply
+// if/as needed
 pub fn run_node<'a>(
     node: &Node<'a>,
     global_context: &Option<&'a GlobalContext>,
@@ -243,6 +249,10 @@ pub fn run_node<'a>(
     }
 }
 
+// this is a public helper to call `run_node`. it takes a single
+// mutable refernece to a global context, and calls run_node with that reference
+// as both mutable, and imutable (because run_node needs access to a mutable in some cases
+// and immutable in others)
 pub fn run_node_helper<'a>(
     node: &Node<'a>,
     global_context: &'a mut GlobalContext,
