@@ -80,101 +80,72 @@ pub fn run_node_series<'a>(
     (success, diff_vec_opt)
 }
 
+pub fn run_threads_with_context<'a>(
+    nodes: &Vec<Node<'a>>,
+    global_context: &Option<&'a GlobalContext>,
+) -> (bool, Option<Vec<ContextDiff>>) {
+    thread::scope(|scope| {
+        // TODO: maybe add max concurrent threads?
+        let handles = (0..nodes.len()).into_iter()
+            .map(|i| {
+                scope.spawn(move |_| {
+                    // concurrent threads cannot modify same
+                    // memory location, so we pass none explicitly
+                    // however, they will all return their diffs of
+                    // what they want the state to be changed to
+                    // and then we apply that diff when we collect it
+                    let mut mut_none = None;
+                    run_node(&nodes[i], &global_context, &mut mut_none)
+                })
+            });
+        let mut diff_vec = vec![];
+        let mut success = true;
+        let collected = handles.collect::<Vec<_>>();
+        for c in collected {
+            success = match c.join() {
+                Ok(s) => {
+                    match s.1 {
+                        None => (),
+                        Some(diff_v) => {
+                            for diff in diff_v {
+                                diff_vec.push(diff);
+                            }
+                        }
+                    }
+                    s.0 && s.0 == success
+                },
+                _ => false,
+            };
+        }
+        let diff_vec_opt = if diff_vec.len() > 0 { Some(diff_vec) } else { None };
+        (success, diff_vec_opt)
+    }).unwrap()
+}
+
 pub fn run_node_parallel<'a>(
     nodes: &Vec<Node<'a>>,
     global_context: &Option<&'a GlobalContext>,
     mut_global_context: &mut Option<&'a mut GlobalContext>,
 ) -> (bool, Option<Vec<ContextDiff>>) {
-    // TODO: figure out how to not have 2 branches here doing mostly the same thing..
-    // I got stuck on rust mutability issues, so easiest solution was just branch it
-
     // two cases here: we either are given a mutable, or immutable global context
-    // if mutable, add some logic to the thread collection for us to modify
-    // the mutable global context ourselves. otherwise, in the else section
-    // we just return a vec of diffs for our caller to apply
     if let Some(mgc) = mut_global_context {
+        // if mutable, we modify the global context ourselves
+        // (id like this happen during the thread joining, ie: while its
+        // still proecssing other threads potentially, but im not sure its possible)
         let mgc_deref = &*mgc;
         let gc: &GlobalContext = mgc_deref;
         let gc_opt = Some(gc);
-        let values = thread::scope(|scope| {
-            // TODO: maybe add max concurrent threads?
-            let handles = (0..nodes.len()).into_iter()
-                .map(|i| {
-                    scope.spawn(move |_| {
-                        // concurrent threads cannot modify same
-                        // memory location, so we pass none explicitly
-                        // however, they will all return their diffs of
-                        // what they want the state to be changed to
-                        // and then we apply that diff when we collect it
-                        let mut mut_none = None;
-                        run_node(&nodes[i], &gc_opt, &mut mut_none)
-                    })
-                });
-            let mut diff_vec = vec![];
-            let mut success = true;
-            let collected = handles.collect::<Vec<_>>();
-            for c in collected {
-                success = match c.join() {
-                    Ok(s) => {
-                        match s.1 {
-                            None => (),
-                            Some(diff_v) => {
-                                // TODO: any logic on order of this
-                                // application? potentially this can be overwriting
-                                // each others data...
-                                for diff in diff_v {
-                                    diff_vec.push(diff);
-                                }
-                            }
-                        }
-                        s.0 && s.0 == success
-                    },
-                    _ => false,
-                };
-            }
-            (success, Some(diff_vec))
-        });
+        let values = run_threads_with_context(nodes, &gc_opt);
 
-        let (success, diff_vec) = values.unwrap();
+        let (success, diff_vec) = values;
         for diff in diff_vec.unwrap() {
             mgc.take_diff(diff);
         }
         (success, None)
     } else {
-        thread::scope(|scope| {
-            // TODO: maybe add max concurrent threads?
-            let handles = (0..nodes.len()).into_iter()
-                .map(|i| {
-                    scope.spawn(move |_| {
-                        let mut mut_none = None;
-                        run_node(&nodes[i], global_context, &mut mut_none)
-                    })
-                });
-            let mut diff_vec = vec![];
-            let mut success = true;
-            let collected = handles.collect::<Vec<_>>();
-            for c in collected {
-                success = match c.join() {
-                    Ok(s) => {
-                        match s.1 {
-                            None => (),
-                            Some(diff_v) => {
-                                // TODO: any logic on order of this
-                                // application? potentially this can be overwriting
-                                // each others data...
-                                for diff in diff_v {
-                                    diff_vec.push(diff);
-                                }
-                            }
-                        }
-                        s.0 && s.0 == success
-                    },
-                    _ => false,
-                };
-            }
-            let diff_vec_opt = if diff_vec.len() > 0 { Some(diff_vec) } else { None };
-            (success, diff_vec_opt)
-        }).unwrap()
+        // otherwise,
+        // we just return a vec of diffs for our caller to apply
+        run_threads_with_context(nodes, global_context)
     }
 }
 
