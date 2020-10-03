@@ -396,6 +396,21 @@ mod test {
     }
 
     #[test]
+    fn returns_false_if_one_tasks_fails_in_parallel() {
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask { cb: || true };
+        let mut strvec = vec!["a", "b", "c", "d", "e"];
+        let mut root = make_root_node_with_list(5, &mytask, false, &mut strvec);
+
+        let myfailtask = MyTask { cb: || false };
+        if let NodeTypeParallel(ref mut s) = root.ntype {
+            s[2].task = Some(&myfailtask);
+        }
+        let (result, _) = run_node_helper(&root, &mut mycontext);
+        assert_eq!(result, false);
+    }
+
+    #[test]
     fn parallel_is_not_a_liar() {
         // run in series with a 0.1 second delay on 5 items
         let mut mycontext = GlobalContext::default();
@@ -426,5 +441,68 @@ mod test {
         assert_eq!(result, true);
         assert!(duration >= 100);
         assert!(duration < 400);
+    }
+
+    // basically we test the functionality of the context diff
+    // being applied properly regardless of nesting of series/parallel nodes
+    // so this node hierarchy looks like:
+    // parallel:
+    //   - parallel:
+    //       - series:
+    //          - parallel: [p1, p2, p3]
+    //          - s2
+    //          - s3
+    //       - b
+    //       - c
+    //       - d
+    //       - e
+    //   - parallel: [f, g, h, i, j]
+    // we test that regardless of the nesting, all of those keys will
+    // be applied to the global context
+    #[test]
+    fn nested_parallels_and_series_can_still_modify_context() {
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask { cb: || true };
+        let mut strvec1 = vec!["", "b", "c", "d", "e"];
+        let mut strvec2 = vec!["f", "g", "h", "i", "j"];
+        let mut strvec3 = vec!["", "s2", "s3"];
+        let mut strvec4 = vec!["p1", "p2", "p3"];
+        let mut parvec = vec!["", ""];
+        let mut inner_parallel1 = make_root_node_with_list(5, &mytask, false, &mut strvec1);
+        let inner_parallel2 = make_root_node_with_list(5, &mytask, false, &mut strvec2);
+        let inner_parallel3 = make_root_node_with_list(3, &mytask, false, &mut strvec4);
+        let mut inner_series1 = make_root_node_with_list(3, &mytask, true, &mut strvec3);
+        let mut root = make_root_node_with_list(2, &mytask, false, &mut parvec);
+
+        if let NodeTypeSeries(ref mut s) = inner_series1.ntype {
+            s[0] = inner_parallel3;
+        }
+        if let NodeTypeParallel(ref mut p) = inner_parallel1.ntype {
+            p[0] = inner_series1;
+        }
+        if let NodeTypeParallel(ref mut p) = root.ntype {
+            p[0] = inner_parallel1;
+            p[1] = inner_parallel2;
+        }
+
+        let (result, _) = run_node_helper(&root, &mut mycontext);
+        assert_eq!(result, true);
+
+        // all of the characters in the strvecs above
+        // should be present
+        assert!(mycontext.variables.contains_key("b"));
+        assert!(mycontext.variables.contains_key("c"));
+        assert!(mycontext.variables.contains_key("d"));
+        assert!(mycontext.variables.contains_key("e"));
+        assert!(mycontext.variables.contains_key("f"));
+        assert!(mycontext.variables.contains_key("g"));
+        assert!(mycontext.variables.contains_key("h"));
+        assert!(mycontext.variables.contains_key("i"));
+        assert!(mycontext.variables.contains_key("j"));
+        assert!(mycontext.variables.contains_key("s2"));
+        assert!(mycontext.variables.contains_key("s3"));
+        assert!(mycontext.variables.contains_key("p1"));
+        assert!(mycontext.variables.contains_key("p2"));
+        assert!(mycontext.variables.contains_key("p3"));
     }
 }
