@@ -476,4 +476,17 @@ mod test {
         assert!(mycontext.variables.contains_key("p2"));
         assert!(mycontext.variables.contains_key("p3"));
     }
+
+    // TODO: add test to check if context diffing are applied
+    // at the desirable times when theres nested parallel/series
+    // eg consider:
+    // parallel:
+    //    series:
+    //       - parallel: [a,b,c]
+    //       - parallel: [x,y,z]
+    // since paralle [abc] and [xyz] are inside a series
+    // that means all of the xyz tasks should be able to see
+    // the output of the abc tasks because they were completed before them
+    // but I think that currently because it is nested inside a root parallel,
+    // that it wont actually set the context for a,b,c until it goes back to root
 }
