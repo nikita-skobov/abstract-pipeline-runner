@@ -178,6 +178,52 @@ pub fn run_node_parallel<'a>(
     }
 }
 
+pub fn run_node_task<'a>(
+    node: &Node<'a>,
+    global_context: &Option<&'a GlobalContext>,
+    mut_global_context: &mut Option<&'a mut GlobalContext>,
+) -> (bool, Option<Vec<ContextDiff>>) {
+    match node.task {
+        Some(cb) => {
+            let (success, context_diff) = if let Some(mgc) = mut_global_context {
+                cb.run(node, *mgc)
+            } else if let Some(gc) = global_context {
+                cb.run(node, *gc)
+            } else {
+                panic!("unsupported usage")
+            };
+
+            // if the task said there is nothing to modify,
+            // then just return the success flag
+            // or if there is a context to modify, but our caller
+            // did not give us a mutable context to modify, then
+            // return the diff, and let the caller handle applying it
+            if context_diff.is_none() || mut_global_context.is_none() {
+                return (success, context_diff)
+            }
+
+            // if the task provides a global context
+            // diff, and our caller allows us to modify the
+            // mut_global_context, then we 'apply' that
+            // diff to the actual global context.
+            if let Some(mgc) = mut_global_context {
+                let context_diff = context_diff.unwrap();
+                for diff in context_diff {
+                    mgc.take_diff(diff);
+                }
+            }
+
+            // we return none because we were allowed to
+            // modify the global context above,
+            // so no point in telling our caller to modify for us
+            (success, None)
+        },
+        // TODO: change this to false.
+        // its only true for debugging
+        None => (true, None),
+    }
+}
+
 pub fn run_node<'a>(
     node: &Node<'a>,
     global_context: &Option<&'a GlobalContext>,
@@ -192,49 +238,7 @@ pub fn run_node<'a>(
             run_node_parallel(v, global_context, mut_global_context)
         }
         NodeTypeTask => {
-            if let Some(ref n) = node.name {
-                println!("{}", n);
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
-            match node.task {
-                Some(cb) => {
-                    let (success, context_diff) = if let Some(mgc) = mut_global_context {
-                        cb.run(node, *mgc)
-                    } else if let Some(gc) = global_context {
-                        cb.run(node, *gc)
-                    } else {
-                        panic!("unsupported usage")
-                    };
-
-                    // if the task said there is nothing to modify,
-                    // then just return the success flag
-                    // or if there is a context to modify, but our caller
-                    // did not give us a mutable context to modify, then
-                    // return the diff, and let the caller handle applying it
-                    if context_diff.is_none() || mut_global_context.is_none() {
-                        return (success, context_diff)
-                    }
-
-                    // if the task provides a global context
-                    // diff, and our caller allows us to modify the
-                    // mut_global_context, then we 'apply' that
-                    // diff to the actual global context.
-                    if let Some(mgc) = mut_global_context {
-                        let context_diff = context_diff.unwrap();
-                        for diff in context_diff {
-                            mgc.take_diff(diff);
-                        }
-                    }
-
-                    // we return none because we were allowed to
-                    // modify the global context above,
-                    // so no point in telling our caller to modify for us
-                    (success, None)
-                },
-                // TODO: change this to false.
-                // its only true for debugging
-                None => (true, None),
-            }
+            run_node_task(node, global_context, mut_global_context)
         }
     }
 }
