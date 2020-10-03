@@ -1,6 +1,12 @@
 use crossbeam_utils::thread;
 use std::collections::HashMap;
 
+/// an abstract concept of a single unit of work
+/// can be implemented anyway you want, on any data structure
+/// that you define a 'run' method for.
+/// if you use Abstract Pipeline Runner for a code pipeline such as
+/// GitHub actions, then you can think of a Task as what GitHub actions
+/// refers to as 'steps'.
 pub trait Task: Send + Sync {
     /// given the node and the current global context (for read only)
     /// run the task however you need to, then return a tuple of a success value
@@ -9,12 +15,32 @@ pub trait Task: Send + Sync {
         (bool, Option<Vec<ContextDiff>>);
 }
 
+/// enum describing the operation you wish to perform on
+/// the global context once the current Task is complete
+// can set a key, value, or remove a key value pair
+// from the global context
 pub enum ContextDiff {
     CDSet(String, String),
     CDRemove(String),
 }
 pub use ContextDiff::*;
 
+/// while the Node struct, and Task trait
+/// are strongly abstract in the sense that you can
+/// implement and structure your pipeline runner anyway you want,
+/// unfortunately the GlobalContext is not very abstract.
+/// it is currently just a hashmap of known_nodes
+/// and variables. variables are what get set dynamically
+/// by ContextDiff operations. I'd like the GlobalContext
+/// to be more abstract (ie allow it to be a trait with generic
+/// parameters) but i could not find a way to do that in rust yet
+/// so, if this does not serve your purposes, you can either
+/// send a PR to modify this GlobalContext to contain what you need
+/// or otherwhise, figure out a way to make this more customizable
+/// the only thing it should need to do is to be able to take
+/// context diffs, and ideally the user's implementation can do
+/// whatever it wants with that. currently, it just modifies
+/// the variables hashmap.
 #[derive(Default, Clone)]
 pub struct GlobalContext<'a> {
     pub known_nodes: HashMap<String, Node<'a>>,
@@ -33,6 +59,12 @@ impl<'a> GlobalContext<'a> {
     }
 }
 
+/// a node must be one of 3 types:
+/// a container which contains a series of other nodes
+/// a container which contains a parallel list of other nodes
+/// a task which is a leaf node. the task node is the node that actually
+/// contains information to give to the Task trait for it to
+/// decide what to do.
 #[derive(Clone)]
 pub enum NodeType<'a> {
     NodeTypeSeries(Vec<Node<'a>>),
@@ -46,6 +78,13 @@ impl<'a> Default for NodeType<'a> {
 }
 pub use NodeType::*;
 
+/// a Node is a recursive data structure
+/// it's only important fields are it's type
+/// (series/parallel/task), it's properties hashmap,
+/// a task field (only set to Some for nodes that have
+/// type == NodeTypeTask), and continue_on_fail will
+/// allow the node run recursive functions to continue
+/// even if one of its nodes reports a failure
 #[derive(Default, Clone)]
 pub struct Node<'a> {
     pub is_root_node: bool,
@@ -193,14 +232,14 @@ pub fn run_node_task<'a>(
     }
 }
 
-// this should really be private, but I thought maybe I might need it to be public
-// at some point ¯\_(ツ)_/¯
-// run_node is a recursive fn that will take a context (both as a mutable reference
-// and immutable reference which point to the same thing), and iterate through
-// the node higherarchy and on each leaf node (that is a task node) it will
-// do node.task.run() and modify the global context if mutable, otherwise
-// it will return a vector of diffs to the caller for the caller to apply
-// if/as needed
+/// this should really be private, but I thought maybe I might need it to be public
+/// at some point ¯\_(ツ)_/¯
+/// run_node is a recursive fn that will take a context (both as a mutable reference
+/// and immutable reference which point to the same thing), and iterate through
+/// the node higherarchy and on each leaf node (that is a task node) it will
+/// do node.task.run() and modify the global context if mutable, otherwise
+/// it will return a vector of diffs to the caller for the caller to apply
+/// if/as needed
 pub fn run_node<'a>(
     node: &Node<'a>,
     global_context: &Option<&'a GlobalContext>,
@@ -220,10 +259,11 @@ pub fn run_node<'a>(
     }
 }
 
-// this is a public helper to call `run_node`. it takes a single
-// mutable refernece to a global context, and calls run_node with that reference
-// as both mutable, and imutable (because run_node needs access to a mutable in some cases
-// and immutable in others)
+/// this is a public helper to call `run_node`. it takes a single
+/// mutable refernece to a global context, and calls run_node with that reference
+/// as both mutable, and imutable (because run_node needs access to a mutable in some cases
+/// and immutable in others)
+/// see docs for `run_node` for more details
 pub fn run_node_helper<'a>(
     node: &Node<'a>,
     global_context: &'a mut GlobalContext,
