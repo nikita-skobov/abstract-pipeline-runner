@@ -266,3 +266,54 @@ pub fn run_node_helper<'a>(
         &mut some,
     )
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    struct MyTask<T: Send + Sync>
+        where T: Fn() -> bool,
+    {
+        cb: T,
+    }
+
+    impl<T: Send + Sync> MyTask<T>
+        where T: Fn() -> bool,
+    {
+        fn do_cb(&self) -> bool {
+            let cb = &self.cb;
+            cb()
+        }
+    }
+
+    impl<T: Send + Sync> Task for MyTask<T>
+        where T: Fn() -> bool,
+    {
+        fn run(&self, node: &Node, global_context: &GlobalContext) ->
+            (bool, Option<Vec<ContextDiff>>)
+        {
+            (self.do_cb(), None)
+        }
+    }
+
+    #[test]
+    fn returns_true_if_task_successful() {
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask { cb: || true };
+        let mut root = Node::default();
+        root.ntype = NodeTypeTask;
+        root.task = Some(&mytask);
+        let (result, _) = run_node_helper(&root, &mut mycontext);
+        assert_eq!(result, true);
+    }
+
+    #[test]
+    fn returns_false_if_task_fails() {
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask { cb: || false };
+        let mut root = Node::default();
+        root.ntype = NodeTypeTask;
+        root.task = Some(&mytask);
+        let (result, _) = run_node_helper(&root, &mut mycontext);
+        assert_eq!(result, false);
+    }
+}
