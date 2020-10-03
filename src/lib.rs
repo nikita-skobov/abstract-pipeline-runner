@@ -291,8 +291,33 @@ mod test {
         fn run(&self, node: &Node, global_context: &GlobalContext) ->
             (bool, Option<Vec<ContextDiff>>)
         {
-            (self.do_cb(), None)
+            let out_diff = if let Some(s) = node.name  {
+                Some(vec![CDSet(s.into(), "".into())])
+            } else {
+                None
+            };
+            (self.do_cb(), out_diff)
         }
+    }
+
+    fn make_root_node_with_series<'a>(
+        series_size: usize,
+        task: &'a dyn Task,
+        name_vec: &'a mut Vec<&str>,
+    ) -> Node<'a> {
+        let mut root = Node::default();
+        let mut node_vec = vec![];
+        for i in 0..series_size {
+            let mut task_node = Node::default();
+            task_node.ntype = NodeTypeTask;
+            if name_vec.len() > i {
+                task_node.name = Some(name_vec[i]);
+            }
+            task_node.task = Some(task);
+            node_vec.push(task_node);
+        }
+        root.ntype = NodeTypeSeries(node_vec);
+        root
     }
 
     #[test]
@@ -315,5 +340,38 @@ mod test {
         root.task = Some(&mytask);
         let (result, _) = run_node_helper(&root, &mut mycontext);
         assert_eq!(result, false);
+    }
+
+    #[test]
+    fn returns_true_if_all_tasks_successful_in_series() {
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask { cb: || true };
+        let mut strvec = vec![];
+        let root = make_root_node_with_series(3, &mytask, &mut strvec);
+        let (result, _) = run_node_helper(&root, &mut mycontext);
+        assert_eq!(result, true);
+    }
+
+    #[test]
+    fn returns_false_if_one_tasks_fails_in_series() {
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask { cb: || true };
+        let mut strvec = vec!["a", "b", "c", "d", "e"];
+        let mut root = make_root_node_with_series(5, &mytask, &mut strvec);
+
+        // the third task should fail, so the global
+        // context should not have d because d never gets ran
+        let myfailtask = MyTask { cb: || false };
+        if let NodeTypeSeries(ref mut s) = root.ntype {
+            s[2].task = Some(&myfailtask);
+        }
+        let (result, _) = run_node_helper(&root, &mut mycontext);
+        assert_eq!(result, false);
+
+        // currently this sets the global context to have 'c',
+        // but should it? if it failed on 'c', should it be allowed
+        // to modify context?
+        assert!(mycontext.variables.contains_key("a"));
+        assert!(mycontext.variables.contains_key("b"));
     }
 }
