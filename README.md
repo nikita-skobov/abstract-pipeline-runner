@@ -10,7 +10,8 @@ a series of nodes get "run" in order, whereas a parallel list of nodes get spawn
 a "task" is an interface that you as the user of this library will implement to provide an actual way of
 "doing work". Any data structure can be a "task", so long as it implements the methods provided in the `Task` trait
 in this library. Each time a `Task` is called to "run", it gets provided an immutable view of the global state of the pipeline,
-and the task can make dynamic decisions based on that.
+and the task can make dynamic decisions based on that. the task "run" method must return a success code (true or false) as well
+as an optional diff of the global state to be applied by the abstract pipeline runner.
 
 
 This library does not contain any code to spawn subshells, or execute programs. It only provides a way to easily define
