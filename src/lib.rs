@@ -19,7 +19,7 @@ pub trait Task: Send + Sync {
 /// the global context once the current Task is complete
 // can set a key, value, or remove a key value pair
 // from the global context
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ContextDiff {
     CDSet(String, String),
     CDRemove(String),
@@ -96,6 +96,36 @@ pub struct Node<'a> {
     pub continue_on_fail: bool,
 }
 
+// a helper function that does the same as
+// the `run_node_series` function, but it will apply each diff
+// to the mut global context in addition to returning
+// a vec of diffs. this mut global context is short lived, and only
+// used so that serial nodes can see data from before each other
+pub fn run_node_series_with_cloned_context<'a>(
+    nodes: &Vec<Node<'a>>,
+    mut_global_context: &'a mut GlobalContext,
+    continue_on_fail: bool,
+) -> (bool, Option<Vec<ContextDiff>>) {
+    let mut success = true;
+    let mut diff_vec = vec![];
+    for n in nodes.iter() {
+        let (status, c) = run_node(n, &Some(mut_global_context), &mut None);
+        if !status && !continue_on_fail {
+            return (false, c);
+        }
+        if let Some(diffs) = c {
+            for diff in diffs {
+                mut_global_context.take_diff(diff.clone());
+                diff_vec.push(diff);
+            }
+        }
+        success = status;
+    }
+
+    let diff_vec_opt = if diff_vec.len() > 0 { Some(diff_vec) } else { None };
+    (success, diff_vec_opt)
+}
+
 pub fn run_node_series<'a>(
     nodes: &Vec<Node<'a>>,
     global_context: &Option<&'a GlobalContext>,
@@ -104,6 +134,20 @@ pub fn run_node_series<'a>(
 ) -> (bool, Option<Vec<ContextDiff>>) {
     let mut success = true;
     let mut diff_vec = vec![];
+    // if we dont have access to the mutable context
+    // then we should make a copy of the immutable context
+    // and use the helper function that will let serial nodes
+    // see global context from each other
+    if mut_global_context.is_none() {
+        let unwrapped = global_context.unwrap();
+        let mut mut_gc_clone = unwrapped.clone();
+        return run_node_series_with_cloned_context(
+            nodes,
+            &mut mut_gc_clone,
+            continue_on_fail,
+        );
+    }
+
     for n in nodes.iter() {
         let (status, c) = run_node(n, global_context, mut_global_context);
         if !status && !continue_on_fail {
