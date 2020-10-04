@@ -19,6 +19,7 @@ pub trait Task: Send + Sync {
 /// the global context once the current Task is complete
 // can set a key, value, or remove a key value pair
 // from the global context
+#[derive(Debug)]
 pub enum ContextDiff {
     CDSet(String, String),
     CDRemove(String),
@@ -519,9 +520,6 @@ mod test {
         assert!(mycontext.variables.contains_key("p3"));
     }
 
-    // TODO: add test to check if context diffing are applied
-    // at the desirable times when theres nested parallel/series
-    // eg consider:
     // parallel:
     //    series:
     //       - parallel: [a,b,c]
@@ -529,6 +527,59 @@ mod test {
     // since paralle [abc] and [xyz] are inside a series
     // that means all of the xyz tasks should be able to see
     // the output of the abc tasks because they were completed before them
-    // but I think that currently because it is nested inside a root parallel,
-    // that it wont actually set the context for a,b,c until it goes back to root
+    #[test]
+    fn context_diffs_applied_for_nested_parallel() {
+        struct MyTask1 {}
+        impl Task for MyTask1
+        {
+            fn run(&self, node: &Node, global_context: &GlobalContext) ->
+                (bool, Option<Vec<ContextDiff>>)
+            {
+                println!("RUNNING ON NODE: {:?}", node.name);
+                println!("GLOBAL CONTEXT: {:?}", global_context.variables);
+                let has_a = format!("gc_has_a_{}", global_context.variables.contains_key("a"));
+                let has_b = format!("gc_has_b_{}", global_context.variables.contains_key("b"));
+                let has_c = format!("gc_has_c_{}", global_context.variables.contains_key("c"));
+                let var_value = format!("{},{},{}", has_a, has_b, has_c);
+                let out_diff = if let Some(s) = node.name {
+                    Some(vec![CDSet(s.into(), var_value)])
+                } else {
+                    None
+                };
+                (true, out_diff)
+            }
+        }
+
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask1 {};
+        let mut parvec1 = vec!["a", "b", "c"];
+        let mut parvec2 = vec!["x", "y", "z"];
+        let mut servec = vec!["", ""];
+        let mut parvec = vec![""];
+        let inner_parallel1 = make_root_node_with_list(3, &mytask, false, &mut parvec1);
+        let inner_parallel2 = make_root_node_with_list(3, &mytask, false, &mut parvec2);
+        let mut inner_series1 = make_root_node_with_list(2, &mytask, true, &mut servec);
+        let mut root = make_root_node_with_list(1, &mytask, false, &mut parvec);
+
+        if let NodeTypeSeries(ref mut s) = inner_series1.ntype {
+            s[0] = inner_parallel1;
+            s[1] = inner_parallel2;
+        }
+        if let NodeTypeParallel(ref mut p) = root.ntype {
+            p[0] = inner_series1;
+        }
+
+        let (result, diffs) = run_node_helper(&root, &mut mycontext);
+        // println!("CONTEXT: {:?}", mycontext.variables);
+        // all of the paralel [xyz] should have access to the output of the [abc] node
+        // before it because that node happens in series with the xyz one
+        assert_eq!(mycontext.variables["x"], "gc_has_a_true,gc_has_b_true,gc_has_c_true");
+        assert_eq!(mycontext.variables["y"], "gc_has_a_true,gc_has_b_true,gc_has_c_true");
+        assert_eq!(mycontext.variables["z"], "gc_has_a_true,gc_has_b_true,gc_has_c_true");
+        // also all of the [abc] node should not have true for any of themselves because
+        // they happen in parallel with each other
+        assert_eq!(mycontext.variables["a"], "gc_has_a_false,gc_has_b_false,gc_has_c_false");
+        assert_eq!(mycontext.variables["b"], "gc_has_a_false,gc_has_b_false,gc_has_c_false");
+        assert_eq!(mycontext.variables["c"], "gc_has_a_false,gc_has_b_false,gc_has_c_false");
+    }
 }
