@@ -177,8 +177,10 @@ pub fn run_node_parallel<'a>(
         let values = run_threads_with_context(nodes, &gc_opt);
 
         let (success, diff_vec) = values;
-        for diff in diff_vec.unwrap() {
-            mgc.take_diff(diff);
+        if let Some(diff_vec) = diff_vec {
+            for diff in diff_vec {
+                mgc.take_diff(diff);
+            }
         }
         (success, None)
     } else {
