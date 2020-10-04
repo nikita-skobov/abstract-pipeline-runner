@@ -520,6 +520,48 @@ mod test {
         assert!(mycontext.variables.contains_key("p3"));
     }
 
+    // series:
+    //   - a
+    //   - b
+    #[test]
+    fn context_diffs_applied_for_series() {
+        struct MyTask1 {}
+        impl Task for MyTask1
+        {
+            fn run(&self, node: &Node, global_context: &GlobalContext) ->
+                (bool, Option<Vec<ContextDiff>>)
+            {
+                let has_a = format!("gc_has_a_{}", global_context.variables.contains_key("a"));
+                let var_value = has_a;
+                let out_diff = if let Some(s) = node.name {
+                    Some(vec![CDSet(s.into(), var_value)])
+                } else {
+                    None
+                };
+                (true, out_diff)
+            }
+        }
+
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask1 {};
+        let mut parvec1 = vec!["a"];
+        let mut parvec2 = vec!["b"];
+        let mut servec = vec!["", ""];
+        let inner_parallel1 = make_root_node_with_list(1, &mytask, false, &mut parvec1);
+        let inner_parallel2 = make_root_node_with_list(1, &mytask, false, &mut parvec2);
+        let mut root = make_root_node_with_list(2, &mytask, true, &mut servec);
+
+        if let NodeTypeSeries(ref mut s) = root.ntype {
+            s[0] = inner_parallel1;
+            s[1] = inner_parallel2;
+        }
+
+        let (_, _) = run_node_helper(&root, &mut mycontext);
+        assert_eq!(mycontext.variables["a"], "gc_has_a_false");
+        // the b node should have access to a because it happens in series after a
+        assert_eq!(mycontext.variables["b"], "gc_has_a_true");
+    }
+
     // parallel:
     //    series:
     //       - parallel: [a,b,c]
