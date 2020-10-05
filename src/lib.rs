@@ -19,6 +19,7 @@ pub trait Task: Send + Sync {
 /// the global context once the current Task is complete
 // can set a key, value, or remove a key value pair
 // from the global context
+#[derive(Debug, Clone)]
 pub enum ContextDiff {
     CDSet(String, String),
     CDRemove(String),
@@ -95,6 +96,36 @@ pub struct Node<'a> {
     pub continue_on_fail: bool,
 }
 
+// a helper function that does the same as
+// the `run_node_series` function, but it will apply each diff
+// to the mut global context in addition to returning
+// a vec of diffs. this mut global context is short lived, and only
+// used so that serial nodes can see data from before each other
+pub fn run_node_series_with_cloned_context<'a>(
+    nodes: &Vec<Node<'a>>,
+    mut_global_context: &'a mut GlobalContext,
+    continue_on_fail: bool,
+) -> (bool, Option<Vec<ContextDiff>>) {
+    let mut success = true;
+    let mut diff_vec = vec![];
+    for n in nodes.iter() {
+        let (status, c) = run_node(n, &Some(mut_global_context), &mut None);
+        if !status && !continue_on_fail {
+            return (false, c);
+        }
+        if let Some(diffs) = c {
+            for diff in diffs {
+                mut_global_context.take_diff(diff.clone());
+                diff_vec.push(diff);
+            }
+        }
+        success = status;
+    }
+
+    let diff_vec_opt = if diff_vec.len() > 0 { Some(diff_vec) } else { None };
+    (success, diff_vec_opt)
+}
+
 pub fn run_node_series<'a>(
     nodes: &Vec<Node<'a>>,
     global_context: &Option<&'a GlobalContext>,
@@ -103,6 +134,20 @@ pub fn run_node_series<'a>(
 ) -> (bool, Option<Vec<ContextDiff>>) {
     let mut success = true;
     let mut diff_vec = vec![];
+    // if we dont have access to the mutable context
+    // then we should make a copy of the immutable context
+    // and use the helper function that will let serial nodes
+    // see global context from each other
+    if mut_global_context.is_none() {
+        let unwrapped = global_context.unwrap();
+        let mut mut_gc_clone = unwrapped.clone();
+        return run_node_series_with_cloned_context(
+            nodes,
+            &mut mut_gc_clone,
+            continue_on_fail,
+        );
+    }
+
     for n in nodes.iter() {
         let (status, c) = run_node(n, global_context, mut_global_context);
         if !status && !continue_on_fail {
@@ -177,8 +222,10 @@ pub fn run_node_parallel<'a>(
         let values = run_threads_with_context(nodes, &gc_opt);
 
         let (success, diff_vec) = values;
-        for diff in diff_vec.unwrap() {
-            mgc.take_diff(diff);
+        if let Some(diff_vec) = diff_vec {
+            for diff in diff_vec {
+                mgc.take_diff(diff);
+            }
         }
         (success, None)
     } else {
@@ -517,9 +564,48 @@ mod test {
         assert!(mycontext.variables.contains_key("p3"));
     }
 
-    // TODO: add test to check if context diffing are applied
-    // at the desirable times when theres nested parallel/series
-    // eg consider:
+    // series:
+    //   - a
+    //   - b
+    #[test]
+    fn context_diffs_applied_for_series() {
+        struct MyTask1 {}
+        impl Task for MyTask1
+        {
+            fn run(&self, node: &Node, global_context: &GlobalContext) ->
+                (bool, Option<Vec<ContextDiff>>)
+            {
+                let has_a = format!("gc_has_a_{}", global_context.variables.contains_key("a"));
+                let var_value = has_a;
+                let out_diff = if let Some(s) = node.name {
+                    Some(vec![CDSet(s.into(), var_value)])
+                } else {
+                    None
+                };
+                (true, out_diff)
+            }
+        }
+
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask1 {};
+        let mut parvec1 = vec!["a"];
+        let mut parvec2 = vec!["b"];
+        let mut servec = vec!["", ""];
+        let inner_parallel1 = make_root_node_with_list(1, &mytask, false, &mut parvec1);
+        let inner_parallel2 = make_root_node_with_list(1, &mytask, false, &mut parvec2);
+        let mut root = make_root_node_with_list(2, &mytask, true, &mut servec);
+
+        if let NodeTypeSeries(ref mut s) = root.ntype {
+            s[0] = inner_parallel1;
+            s[1] = inner_parallel2;
+        }
+
+        let (_, _) = run_node_helper(&root, &mut mycontext);
+        assert_eq!(mycontext.variables["a"], "gc_has_a_false");
+        // the b node should have access to a because it happens in series after a
+        assert_eq!(mycontext.variables["b"], "gc_has_a_true");
+    }
+
     // parallel:
     //    series:
     //       - parallel: [a,b,c]
@@ -527,6 +613,59 @@ mod test {
     // since paralle [abc] and [xyz] are inside a series
     // that means all of the xyz tasks should be able to see
     // the output of the abc tasks because they were completed before them
-    // but I think that currently because it is nested inside a root parallel,
-    // that it wont actually set the context for a,b,c until it goes back to root
+    #[test]
+    fn context_diffs_applied_for_nested_parallel() {
+        struct MyTask1 {}
+        impl Task for MyTask1
+        {
+            fn run(&self, node: &Node, global_context: &GlobalContext) ->
+                (bool, Option<Vec<ContextDiff>>)
+            {
+                println!("RUNNING ON NODE: {:?}", node.name);
+                println!("GLOBAL CONTEXT: {:?}", global_context.variables);
+                let has_a = format!("gc_has_a_{}", global_context.variables.contains_key("a"));
+                let has_b = format!("gc_has_b_{}", global_context.variables.contains_key("b"));
+                let has_c = format!("gc_has_c_{}", global_context.variables.contains_key("c"));
+                let var_value = format!("{},{},{}", has_a, has_b, has_c);
+                let out_diff = if let Some(s) = node.name {
+                    Some(vec![CDSet(s.into(), var_value)])
+                } else {
+                    None
+                };
+                (true, out_diff)
+            }
+        }
+
+        let mut mycontext = GlobalContext::default();
+        let mytask = MyTask1 {};
+        let mut parvec1 = vec!["a", "b", "c"];
+        let mut parvec2 = vec!["x", "y", "z"];
+        let mut servec = vec!["", ""];
+        let mut parvec = vec![""];
+        let inner_parallel1 = make_root_node_with_list(3, &mytask, false, &mut parvec1);
+        let inner_parallel2 = make_root_node_with_list(3, &mytask, false, &mut parvec2);
+        let mut inner_series1 = make_root_node_with_list(2, &mytask, true, &mut servec);
+        let mut root = make_root_node_with_list(1, &mytask, false, &mut parvec);
+
+        if let NodeTypeSeries(ref mut s) = inner_series1.ntype {
+            s[0] = inner_parallel1;
+            s[1] = inner_parallel2;
+        }
+        if let NodeTypeParallel(ref mut p) = root.ntype {
+            p[0] = inner_series1;
+        }
+
+        let (result, diffs) = run_node_helper(&root, &mut mycontext);
+        // println!("CONTEXT: {:?}", mycontext.variables);
+        // all of the paralel [xyz] should have access to the output of the [abc] node
+        // before it because that node happens in series with the xyz one
+        assert_eq!(mycontext.variables["x"], "gc_has_a_true,gc_has_b_true,gc_has_c_true");
+        assert_eq!(mycontext.variables["y"], "gc_has_a_true,gc_has_b_true,gc_has_c_true");
+        assert_eq!(mycontext.variables["z"], "gc_has_a_true,gc_has_b_true,gc_has_c_true");
+        // also all of the [abc] node should not have true for any of themselves because
+        // they happen in parallel with each other
+        assert_eq!(mycontext.variables["a"], "gc_has_a_false,gc_has_b_false,gc_has_c_false");
+        assert_eq!(mycontext.variables["b"], "gc_has_a_false,gc_has_b_false,gc_has_c_false");
+        assert_eq!(mycontext.variables["c"], "gc_has_a_false,gc_has_b_false,gc_has_c_false");
+    }
 }
