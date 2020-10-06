@@ -96,6 +96,91 @@ pub struct Node<'a> {
     pub continue_on_fail: bool,
 }
 
+impl<'a> Node<'a> {
+    pub fn pretty_print(&self) -> String {
+        let mut string = String::new();
+        self.pretty_print_with_indent(&mut string, 0);
+        string
+    }
+
+    fn pretty_print_with_indent(&self, current_string: &mut String, indent: usize) {
+        let indent_size = 4;
+        let indent_char = ' ';
+        let mut indent_str = String::with_capacity(indent);
+        for _ in 0..indent {
+            indent_str.push(indent_char);
+        }
+        match &self.ntype {
+            NodeTypeSeries(vec) => {
+                let fmt_str = match self.name {
+                    None => format!("{}Series\n", indent_str),
+                    Some(n) => format!("{}Series ({})\n", indent_str, n),
+                };
+                current_string.push_str(fmt_str.as_str());
+                for v in vec {
+                    v.pretty_print_with_indent(current_string, indent + indent_size);
+                }
+            },
+            NodeTypeParallel(vec) => {
+                let fmt_str = match self.name {
+                    None => format!("{}Parallel\n", indent_str),
+                    Some(n) => format!("{}Parallel ({})\n", indent_str, n),
+                };
+                current_string.push_str(fmt_str.as_str());
+                for v in vec {
+                    v.pretty_print_with_indent(current_string, indent + indent_size);
+                }
+            },
+            NodeTypeTask => {
+                let fmt_str = match self.name {
+                    None => format!("{}Task\n", indent_str),
+                    Some(n) => format!("{}Task ({})\n", indent_str, n),
+                };
+                current_string.push_str(fmt_str.as_str());
+                for _ in 0..indent_size {
+                    indent_str.push(indent_char);
+                }
+                for prop in &self.properties {
+                    let fmt_str = format!("{}{}: {}\n", indent_str, prop.0, prop.1);
+                    current_string.push_str(fmt_str.as_str());
+                }
+            }
+        }
+    }
+}
+
+// this is pretty ugly for nested structures because rust doesn't let you
+// pretty format with indentation, so I use the above custom pretty_print() method
+// its slow, and shouldn't be used in a real program, but useful for debugging
+impl<'a> std::fmt::Debug for Node<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.ntype {
+            NodeTypeSeries(vec) => {
+                let mut out = f.debug_tuple("\nSeries\n");
+                for v in vec {
+                    out.field(v);
+                }
+                out.finish()
+            },
+            NodeTypeParallel(vec) => {
+                let mut out = f.debug_tuple("\nSeries\n");
+                for v in vec {
+                    out.field(v);
+                }
+                out.finish()
+            },
+            NodeTypeTask => {
+                let mut out = f.debug_struct("\nTask\n");
+                if let Some(n) = self.name {
+                    out.field("name", &n);
+                }
+                out.field("properties", &self.properties);
+                out.finish()
+            }
+        }
+    }
+}
+
 // a helper function that does the same as
 // the `run_node_series` function, but it will apply each diff
 // to the mut global context in addition to returning
