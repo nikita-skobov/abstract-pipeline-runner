@@ -7,11 +7,11 @@ use std::collections::HashMap;
 /// if you use Abstract Pipeline Runner for a code pipeline such as
 /// GitHub actions, then you can think of a Task as what GitHub actions
 /// refers to as 'steps'.
-pub trait Task: Send + Sync {
+pub trait Task<T: Send + Sync + Clone>: Send + Sync {
     /// given the node and the current global context (for read only)
     /// run the task however you need to, then return a tuple of a success value
     /// and an optional ContextDiff if the caller needs to modify the global context
-    fn run<T: Send + Sync + Clone, U: Task + Clone>(
+    fn run<U: Task<T> + Clone>(
         &self,
         node: &Node<T, U>,
         global_context: &GlobalContext<T, U>
@@ -37,11 +37,11 @@ pub use ContextDiff::*;
 /// and variables. variables are what get set dynamically
 /// by ContextDiff operations
 #[derive(Default, Clone)]
-pub struct GlobalContext<'a, T: Send + Sync + Clone, U: Task + Clone> {
+pub struct GlobalContext<'a, T: Send + Sync + Clone, U: Task<T> + Clone> {
     pub known_nodes: HashMap<String, Node<'a, T, U>>,
     pub variables: HashMap<String, String>,
 }
-impl<'a, T: Send + Sync + Clone, U: Task + Clone> GlobalContext<'a, T, U> {
+impl<'a, T: Send + Sync + Clone, U: Task<T> + Clone> GlobalContext<'a, T, U> {
     fn take_diff(&mut self, diff: ContextDiff) {
         match diff {
             CDSet(skey, sval) => {
@@ -61,12 +61,12 @@ impl<'a, T: Send + Sync + Clone, U: Task + Clone> GlobalContext<'a, T, U> {
 /// contains information to give to the Task trait for it to
 /// decide what to do.
 #[derive(Clone)]
-pub enum NodeType<'a, T: Send + Sync + Clone, U: Task + Clone> {
+pub enum NodeType<'a, T: Send + Sync + Clone, U: Task<T> + Clone> {
     NodeTypeSeries(Vec<Node<'a, T, U>>),
     NodeTypeParallel(Vec<Node<'a, T, U>>),
     NodeTypeTask,
 }
-impl<'a, T: Send + Sync + Clone, U: Task + Clone> Default for NodeType<'a, T, U> {
+impl<'a, T: Send + Sync + Clone, U: Task<T> + Clone> Default for NodeType<'a, T, U> {
     fn default() -> Self {
         NodeTypeTask
     }
@@ -81,7 +81,7 @@ pub use NodeType::*;
 /// allow the node run recursive functions to continue
 /// even if one of its nodes reports a failure
 #[derive(Default, Clone)]
-pub struct Node<'a, T: Send + Sync + Clone, U: Task + Clone> {
+pub struct Node<'a, T: Send + Sync + Clone, U: Task<T> + Clone> {
     pub is_root_node: bool,
     pub name: Option<&'a str>,
     pub ntype: NodeType<'a, T, U>,
@@ -90,7 +90,7 @@ pub struct Node<'a, T: Send + Sync + Clone, U: Task + Clone> {
     pub continue_on_fail: bool,
 }
 
-impl<'a, T: Send + Sync + Clone, U: Task + Clone> Node<'a, T, U> {
+impl<'a, T: Send + Sync + Clone, U: Task<T> + Clone> Node<'a, T, U> {
     pub fn pretty_print(&self) -> String {
         let mut string = String::new();
         self.pretty_print_with_indent(&mut string, 0);
@@ -147,7 +147,7 @@ impl<'a, T: Send + Sync + Clone, U: Task + Clone> Node<'a, T, U> {
 // this is pretty ugly for nested structures because rust doesn't let you
 // pretty format with indentation, so I use the above custom pretty_print() method
 // its slow, and shouldn't be used in a real program, but useful for debugging
-impl<'a, T: Send + Sync + Clone, U: Task + Clone> std::fmt::Debug for Node<'a, T, U> {
+impl<'a, T: Send + Sync + Clone, U: Task<T> + Clone> std::fmt::Debug for Node<'a, T, U> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.ntype {
             NodeTypeSeries(vec) => {
@@ -182,7 +182,7 @@ impl<'a, T: Send + Sync + Clone, U: Task + Clone> std::fmt::Debug for Node<'a, T
 // to the mut global context in addition to returning
 // a vec of diffs. this mut global context is short lived, and only
 // used so that serial nodes can see data from before each other
-pub fn run_node_series_with_cloned_context<'a, T: Send + Sync + Clone, U: Task + Clone>(
+pub fn run_node_series_with_cloned_context<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
     nodes: &Vec<Node<'a, T, U>>,
     mut_global_context: &'a mut GlobalContext<T, U>,
     continue_on_fail: bool,
@@ -207,7 +207,7 @@ pub fn run_node_series_with_cloned_context<'a, T: Send + Sync + Clone, U: Task +
     (success, diff_vec_opt)
 }
 
-pub fn run_node_series<'a, T: Send + Sync + Clone, U: Task + Clone>(
+pub fn run_node_series<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
     nodes: &Vec<Node<'a, T, U>>,
     global_context: &Option<&'a GlobalContext<T, U>>,
     mut_global_context: &mut Option<&'a mut GlobalContext<T, U>>,
@@ -245,7 +245,7 @@ pub fn run_node_series<'a, T: Send + Sync + Clone, U: Task + Clone>(
     (success, diff_vec_opt)
 }
 
-pub fn run_threads_with_context<'a, T: Send + Sync + Clone, U: Task + Clone>(
+pub fn run_threads_with_context<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
     nodes: &Vec<Node<'a, T, U>>,
     global_context: &Option<&'a GlobalContext<T, U>>,
 ) -> (bool, Option<Vec<ContextDiff>>) {
@@ -287,7 +287,7 @@ pub fn run_threads_with_context<'a, T: Send + Sync + Clone, U: Task + Clone>(
     }).unwrap()
 }
 
-pub fn run_node_parallel<'a, T: Send + Sync + Clone, U: Task + Clone>(
+pub fn run_node_parallel<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
     nodes: &Vec<Node<'a, T, U>>,
     global_context: &Option<&'a GlobalContext<T, U>>,
     mut_global_context: &mut Option<&'a mut GlobalContext<T, U>>,
@@ -316,7 +316,7 @@ pub fn run_node_parallel<'a, T: Send + Sync + Clone, U: Task + Clone>(
     }
 }
 
-pub fn run_node_task<'a, T: Send + Sync + Clone, U: Task + Clone>(
+pub fn run_node_task<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
     node: &Node<'a, T, U>,
     global_context: &Option<&'a GlobalContext<T, U>>,
     mut_global_context: &mut Option<&'a mut GlobalContext<T, U>>,
@@ -368,7 +368,7 @@ pub fn run_node_task<'a, T: Send + Sync + Clone, U: Task + Clone>(
 /// do node.task.run() and modify the global context if mutable, otherwise
 /// it will return a vector of diffs to the caller for the caller to apply
 /// if/as needed
-pub fn run_node<'a, T: Send + Sync + Clone, U: Task + Clone>(
+pub fn run_node<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
     node: &Node<'a, T, U>,
     global_context: &Option<&'a GlobalContext<T, U>>,
     mut_global_context: &mut Option<&'a mut GlobalContext<T, U>>,
@@ -392,7 +392,7 @@ pub fn run_node<'a, T: Send + Sync + Clone, U: Task + Clone>(
 /// as both mutable, and imutable (because run_node needs access to a mutable in some cases
 /// and immutable in others)
 /// see docs for `run_node` for more details
-pub fn run_node_helper<'a, T: Send + Sync + Clone, U: Task + Clone>(
+pub fn run_node_helper<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
     node: &Node<'a, T, U>,
     global_context: &'a mut GlobalContext<T, U>,
 ) -> (bool, Option<Vec<ContextDiff>>)
@@ -477,8 +477,8 @@ mod test {
         }
     }
 
-    impl Task for MyTask {
-        fn run<T: Send + Sync + Clone, U: Task + Clone>(&self, node: &Node<T, U>, global_context: &GlobalContext<T, U>) ->
+    impl<T: Send + Sync + Clone> Task<T> for MyTask {
+        fn run<U: Task<T> + Clone>(&self, node: &Node<T, U>, global_context: &GlobalContext<T, U>) ->
             (bool, Option<Vec<ContextDiff>>)
         {
             let out_diff = if let Some(s) = node.name  {
@@ -490,7 +490,7 @@ mod test {
         }
     }
 
-    fn make_root_node_with_list<'a, T: Send + Sync + Clone, U: Task + Clone>(
+    fn make_root_node_with_list<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
         series_size: usize,
         task: &'a U,
         is_series: bool,
@@ -754,9 +754,9 @@ mod test {
     fn context_diffs_applied_for_series() {
         #[derive(Clone)]
         struct MyTask1 {}
-        impl Task for MyTask1
+        impl<T: Send + Sync + Clone> Task<T> for MyTask1
         {
-            fn run<T: Send + Sync + Clone, U: Task + Clone>(&self, node: &Node<T, U>, global_context: &GlobalContext<T, U>) ->
+            fn run<U: Task<T> + Clone>(&self, node: &Node<T, U>, global_context: &GlobalContext<T, U>) ->
                 (bool, Option<Vec<ContextDiff>>)
             {
                 let has_a = format!("gc_has_a_{}", global_context.variables.contains_key("a"));
@@ -804,9 +804,9 @@ mod test {
     fn context_diffs_applied_for_nested_parallel() {
         #[derive(Clone)]
         struct MyTask1 {}
-        impl Task for MyTask1
+        impl<T: Send + Sync + Clone> Task<T> for MyTask1
         {
-            fn run<T: Send + Sync + Clone, U: Task + Clone>(&self, node: &Node<T, U>, global_context: &GlobalContext<T, U>) ->
+            fn run<U: Task<T> + Clone>(&self, node: &Node<T, U>, global_context: &GlobalContext<T, U>) ->
                 (bool, Option<Vec<ContextDiff>>)
             {
                 println!("RUNNING ON NODE: {:?}", node.name);
