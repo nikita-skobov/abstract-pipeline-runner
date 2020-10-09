@@ -11,8 +11,11 @@ pub trait Task: Send + Sync {
     /// given the node and the current global context (for read only)
     /// run the task however you need to, then return a tuple of a success value
     /// and an optional ContextDiff if the caller needs to modify the global context
-    fn run(&self, node: &Node, global_context: &GlobalContext) ->
-        (bool, Option<Vec<ContextDiff>>);
+    fn run<T: Send + Sync + Clone, U: Task + Clone>(
+        &self,
+        node: &Node<T, U>,
+        global_context: &GlobalContext<T, U>
+    ) -> (bool, Option<Vec<ContextDiff>>);
 }
 
 /// enum describing the operation you wish to perform on
@@ -32,22 +35,13 @@ pub use ContextDiff::*;
 /// unfortunately the GlobalContext is not very abstract.
 /// it is currently just a hashmap of known_nodes
 /// and variables. variables are what get set dynamically
-/// by ContextDiff operations. I'd like the GlobalContext
-/// to be more abstract (ie allow it to be a trait with generic
-/// parameters) but i could not find a way to do that in rust yet
-/// so, if this does not serve your purposes, you can either
-/// send a PR to modify this GlobalContext to contain what you need
-/// or otherwhise, figure out a way to make this more customizable
-/// the only thing it should need to do is to be able to take
-/// context diffs, and ideally the user's implementation can do
-/// whatever it wants with that. currently, it just modifies
-/// the variables hashmap.
+/// by ContextDiff operations
 #[derive(Default, Clone)]
-pub struct GlobalContext<'a> {
-    pub known_nodes: HashMap<String, Node<'a>>,
+pub struct GlobalContext<'a, T: Send + Sync + Clone, U: Task + Clone> {
+    pub known_nodes: HashMap<String, Node<'a, T, U>>,
     pub variables: HashMap<String, String>,
 }
-impl<'a> GlobalContext<'a> {
+impl<'a, T: Send + Sync + Clone, U: Task + Clone> GlobalContext<'a, T, U> {
     fn take_diff(&mut self, diff: ContextDiff) {
         match diff {
             CDSet(skey, sval) => {
@@ -67,12 +61,12 @@ impl<'a> GlobalContext<'a> {
 /// contains information to give to the Task trait for it to
 /// decide what to do.
 #[derive(Clone)]
-pub enum NodeType<'a> {
-    NodeTypeSeries(Vec<Node<'a>>),
-    NodeTypeParallel(Vec<Node<'a>>),
+pub enum NodeType<'a, T: Send + Sync + Clone, U: Task + Clone> {
+    NodeTypeSeries(Vec<Node<'a, T, U>>),
+    NodeTypeParallel(Vec<Node<'a, T, U>>),
     NodeTypeTask,
 }
-impl<'a> Default for NodeType<'a> {
+impl<'a, T: Send + Sync + Clone, U: Task + Clone> Default for NodeType<'a, T, U> {
     fn default() -> Self {
         NodeTypeTask
     }
@@ -87,13 +81,100 @@ pub use NodeType::*;
 /// allow the node run recursive functions to continue
 /// even if one of its nodes reports a failure
 #[derive(Default, Clone)]
-pub struct Node<'a> {
+pub struct Node<'a, T: Send + Sync + Clone, U: Task + Clone> {
     pub is_root_node: bool,
     pub name: Option<&'a str>,
-    pub ntype: NodeType<'a>,
-    pub task: Option<&'a dyn Task>,
-    pub properties: HashMap<&'a str, &'a str>,
+    pub ntype: NodeType<'a, T, U>,
+    pub task: Option<&'a U>,
+    pub properties: HashMap<&'a str, T>,
     pub continue_on_fail: bool,
+}
+
+impl<'a, T: Send + Sync + Clone, U: Task + Clone> Node<'a, T, U> {
+    pub fn pretty_print(&self) -> String {
+        let mut string = String::new();
+        self.pretty_print_with_indent(&mut string, 0);
+        string
+    }
+
+    fn pretty_print_with_indent(&self, current_string: &mut String, indent: usize) {
+        let indent_size = 4;
+        let indent_char = ' ';
+        let mut indent_str = String::with_capacity(indent);
+        for _ in 0..indent {
+            indent_str.push(indent_char);
+        }
+        match &self.ntype {
+            NodeTypeSeries(vec) => {
+                let fmt_str = match self.name {
+                    None => format!("{}Series\n", indent_str),
+                    Some(n) => format!("{}Series ({})\n", indent_str, n),
+                };
+                current_string.push_str(fmt_str.as_str());
+                for v in vec {
+                    v.pretty_print_with_indent(current_string, indent + indent_size);
+                }
+            },
+            NodeTypeParallel(vec) => {
+                let fmt_str = match self.name {
+                    None => format!("{}Parallel\n", indent_str),
+                    Some(n) => format!("{}Parallel ({})\n", indent_str, n),
+                };
+                current_string.push_str(fmt_str.as_str());
+                for v in vec {
+                    v.pretty_print_with_indent(current_string, indent + indent_size);
+                }
+            },
+            NodeTypeTask => {
+                let fmt_str = match self.name {
+                    None => format!("{}Task\n", indent_str),
+                    Some(n) => format!("{}Task ({})\n", indent_str, n),
+                };
+                current_string.push_str(fmt_str.as_str());
+                for _ in 0..indent_size {
+                    indent_str.push(indent_char);
+                }
+                // TODO: cant fmt_str properties because its generic T
+                // for prop in &self.properties {
+                //     let fmt_str = format!("{}{}: {}\n", indent_str, prop.0, prop.1);
+                //     current_string.push_str(fmt_str.as_str());
+                // }
+            }
+        }
+    }
+}
+
+// this is pretty ugly for nested structures because rust doesn't let you
+// pretty format with indentation, so I use the above custom pretty_print() method
+// its slow, and shouldn't be used in a real program, but useful for debugging
+impl<'a, T: Send + Sync + Clone, U: Task + Clone> std::fmt::Debug for Node<'a, T, U> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.ntype {
+            NodeTypeSeries(vec) => {
+                let mut out = f.debug_tuple("\nSeries\n");
+                for v in vec {
+                    out.field(v);
+                }
+                out.finish()
+            },
+            NodeTypeParallel(vec) => {
+                let mut out = f.debug_tuple("\nSeries\n");
+                for v in vec {
+                    out.field(v);
+                }
+                out.finish()
+            },
+            NodeTypeTask => {
+                let mut out = f.debug_struct("\nTask\n");
+                if let Some(n) = self.name {
+                    out.field("name", &n);
+                }
+                // TODO:
+                // out.field("properties", &self.properties);
+                out.finish()
+            }
+        }
+    }
 }
 
 // a helper function that does the same as
@@ -101,9 +182,9 @@ pub struct Node<'a> {
 // to the mut global context in addition to returning
 // a vec of diffs. this mut global context is short lived, and only
 // used so that serial nodes can see data from before each other
-pub fn run_node_series_with_cloned_context<'a>(
-    nodes: &Vec<Node<'a>>,
-    mut_global_context: &'a mut GlobalContext,
+pub fn run_node_series_with_cloned_context<'a, T: Send + Sync + Clone, U: Task + Clone>(
+    nodes: &Vec<Node<'a, T, U>>,
+    mut_global_context: &'a mut GlobalContext<T, U>,
     continue_on_fail: bool,
 ) -> (bool, Option<Vec<ContextDiff>>) {
     let mut success = true;
@@ -126,10 +207,10 @@ pub fn run_node_series_with_cloned_context<'a>(
     (success, diff_vec_opt)
 }
 
-pub fn run_node_series<'a>(
-    nodes: &Vec<Node<'a>>,
-    global_context: &Option<&'a GlobalContext>,
-    mut_global_context: &mut Option<&'a mut GlobalContext>,
+pub fn run_node_series<'a, T: Send + Sync + Clone, U: Task + Clone>(
+    nodes: &Vec<Node<'a, T, U>>,
+    global_context: &Option<&'a GlobalContext<T, U>>,
+    mut_global_context: &mut Option<&'a mut GlobalContext<T, U>>,
     continue_on_fail: bool,
 ) -> (bool, Option<Vec<ContextDiff>>) {
     let mut success = true;
@@ -164,9 +245,9 @@ pub fn run_node_series<'a>(
     (success, diff_vec_opt)
 }
 
-pub fn run_threads_with_context<'a>(
-    nodes: &Vec<Node<'a>>,
-    global_context: &Option<&'a GlobalContext>,
+pub fn run_threads_with_context<'a, T: Send + Sync + Clone, U: Task + Clone>(
+    nodes: &Vec<Node<'a, T, U>>,
+    global_context: &Option<&'a GlobalContext<T, U>>,
 ) -> (bool, Option<Vec<ContextDiff>>) {
     thread::scope(|scope| {
         // TODO: maybe add max concurrent threads?
@@ -206,10 +287,10 @@ pub fn run_threads_with_context<'a>(
     }).unwrap()
 }
 
-pub fn run_node_parallel<'a>(
-    nodes: &Vec<Node<'a>>,
-    global_context: &Option<&'a GlobalContext>,
-    mut_global_context: &mut Option<&'a mut GlobalContext>,
+pub fn run_node_parallel<'a, T: Send + Sync + Clone, U: Task + Clone>(
+    nodes: &Vec<Node<'a, T, U>>,
+    global_context: &Option<&'a GlobalContext<T, U>>,
+    mut_global_context: &mut Option<&'a mut GlobalContext<T, U>>,
 ) -> (bool, Option<Vec<ContextDiff>>) {
     // two cases here: we either are given a mutable, or immutable global context
     if let Some(mgc) = mut_global_context {
@@ -217,7 +298,7 @@ pub fn run_node_parallel<'a>(
         // (id like this happen during the thread joining, ie: while its
         // still proecssing other threads potentially, but im not sure its possible)
         let mgc_deref = &*mgc;
-        let gc: &GlobalContext = mgc_deref;
+        let gc: &GlobalContext<T, U> = mgc_deref;
         let gc_opt = Some(gc);
         let values = run_threads_with_context(nodes, &gc_opt);
 
@@ -235,10 +316,10 @@ pub fn run_node_parallel<'a>(
     }
 }
 
-pub fn run_node_task<'a>(
-    node: &Node<'a>,
-    global_context: &Option<&'a GlobalContext>,
-    mut_global_context: &mut Option<&'a mut GlobalContext>,
+pub fn run_node_task<'a, T: Send + Sync + Clone, U: Task + Clone>(
+    node: &Node<'a, T, U>,
+    global_context: &Option<&'a GlobalContext<T, U>>,
+    mut_global_context: &mut Option<&'a mut GlobalContext<T, U>>,
 ) -> (bool, Option<Vec<ContextDiff>>) {
     match node.task {
         None => (false, None),
@@ -287,10 +368,10 @@ pub fn run_node_task<'a>(
 /// do node.task.run() and modify the global context if mutable, otherwise
 /// it will return a vector of diffs to the caller for the caller to apply
 /// if/as needed
-pub fn run_node<'a>(
-    node: &Node<'a>,
-    global_context: &Option<&'a GlobalContext>,
-    mut_global_context: &mut Option<&'a mut GlobalContext>,
+pub fn run_node<'a, T: Send + Sync + Clone, U: Task + Clone>(
+    node: &Node<'a, T, U>,
+    global_context: &Option<&'a GlobalContext<T, U>>,
+    mut_global_context: &mut Option<&'a mut GlobalContext<T, U>>,
 ) -> (bool, Option<Vec<ContextDiff>>)
 {
     match node.ntype {
@@ -311,9 +392,9 @@ pub fn run_node<'a>(
 /// as both mutable, and imutable (because run_node needs access to a mutable in some cases
 /// and immutable in others)
 /// see docs for `run_node` for more details
-pub fn run_node_helper<'a>(
-    node: &Node<'a>,
-    global_context: &'a mut GlobalContext,
+pub fn run_node_helper<'a, T: Send + Sync + Clone, U: Task + Clone>(
+    node: &Node<'a, T, U>,
+    global_context: &'a mut GlobalContext<T, U>,
 ) -> (bool, Option<Vec<ContextDiff>>)
 {
     let none = None;
@@ -332,25 +413,72 @@ mod test {
     use std::time::Instant;
     use std::thread::sleep;
 
-    struct MyTask<T: Send + Sync>
-        where T: Fn() -> bool,
-    {
-        cb: T,
-    }
 
-    impl<T: Send + Sync> MyTask<T>
-        where T: Fn() -> bool,
+    // =================================
+    // this block of code was taken from
+    // https://github.com/dtolnay/dyn-clone/blob/master/src/lib.rs
+    // the license of which is MIT and is here: https://github.com/dtolnay/dyn-clone/blob/master/LICENSE-MIT
+    // this code was copy pasted as is because I didn't want a dependency
+    // just for this test. the actual library above does not need any
+    // dependencies, but this DynClone is convenient for testing
+    pub trait DynClone {
+        unsafe fn clone_box(&self) -> *mut ();
+    }
+    pub fn clone<T>(t: &T) -> T where T: DynClone {
+        unsafe {
+            *Box::from_raw(<T as DynClone>::clone_box(t) as *mut T)
+        }
+    }
+    pub fn clone_box<T>(t: &T) -> Box<T> where T: ?Sized + DynClone {
+        let mut fat_ptr = t as *const T;
+        unsafe {
+            let data_ptr = &mut fat_ptr as *mut *const T as *mut *mut ();
+            assert_eq!(*data_ptr as *const (), t as *const T as *const ());
+            *data_ptr = <T as DynClone>::clone_box(t);
+        }
+        unsafe {
+            Box::from_raw(fat_ptr as *mut T)
+        }
+    }
+    impl<T> DynClone for T where T: core::clone::Clone {
+        unsafe fn clone_box(&self) -> *mut () {
+            Box::into_raw(Box::new(self.clone())) as *mut ()
+        }
+    }
+    trait FnClone: DynClone {
+        fn call(&self) -> bool;
+    }
+    impl<F> FnClone for F where F: Fn() -> bool + Clone {
+        fn call(&self) -> bool {
+            self()
+        }
+    }
+    // =================================
+
+    // use FnClone: DynClone
+    // because by default Rust cannot clone a Box<dyn Fn()>
+    // and for testing it would be convenient to use a cloned closure
+    struct MyTask
     {
-        fn do_cb(&self) -> bool {
-            let cb = &self.cb;
-            cb()
+        cb: Box<dyn FnClone + Send + Sync>,
+    }
+    impl Clone for MyTask {
+        fn clone(&self) -> Self {
+            MyTask {
+                cb: clone_box(&*self.cb)
+            }
         }
     }
 
-    impl<T: Send + Sync> Task for MyTask<T>
-        where T: Fn() -> bool,
-    {
-        fn run(&self, node: &Node, global_context: &GlobalContext) ->
+    impl MyTask{
+        fn do_cb(&self) -> bool {
+            let cb = &self.cb;
+            cb.call()
+        }
+    }
+
+    impl Task for MyTask {
+        fn run<T: Send + Sync + Clone, U: Task + Clone>(&self, node: &Node<T, U>, global_context: &GlobalContext<T, U>) ->
             (bool, Option<Vec<ContextDiff>>)
         {
             let out_diff = if let Some(s) = node.name  {
@@ -362,16 +490,30 @@ mod test {
         }
     }
 
-    fn make_root_node_with_list<'a>(
+    fn make_root_node_with_list<'a, T: Send + Sync + Clone, U: Task + Clone>(
         series_size: usize,
-        task: &'a dyn Task,
+        task: &'a U,
         is_series: bool,
         name_vec: &'a mut Vec<&str>,
-    ) -> Node<'a> {
-        let mut root = Node::default();
+    ) -> Node<'a, T, U> {
+        let mut root = Node {
+            name: None,
+            is_root_node: false,
+            ntype: NodeTypeTask,
+            task: None,
+            properties: HashMap::new(),
+            continue_on_fail: false,
+        };
         let mut node_vec = vec![];
         for i in 0..series_size {
-            let mut task_node = Node::default();
+            let mut task_node = Node {
+                name: None,
+                is_root_node: false,
+                ntype: NodeTypeTask,
+                task: None,
+                properties: HashMap::new(),
+                continue_on_fail: false,
+            };
             task_node.ntype = NodeTypeTask;
             if name_vec.len() > i {
                 task_node.name = Some(name_vec[i]);
@@ -389,9 +531,19 @@ mod test {
 
     #[test]
     fn returns_true_if_task_successful() {
-        let mut mycontext = GlobalContext::default();
-        let mytask = MyTask { cb: || true };
-        let mut root = Node::default();
+        let mytask = MyTask { cb: Box::new(|| true) };
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, _>>::new(),
+            variables: HashMap::new(),
+        };
+        let mut root = Node {
+            name: None,
+            is_root_node: false,
+            ntype: NodeTypeTask,
+            task: None,
+            properties: HashMap::new(),
+            continue_on_fail: false,
+        };
         root.ntype = NodeTypeTask;
         root.task = Some(&mytask);
         let (result, _) = run_node_helper(&root, &mut mycontext);
@@ -400,9 +552,19 @@ mod test {
 
     #[test]
     fn returns_false_if_task_fails() {
-        let mut mycontext = GlobalContext::default();
-        let mytask = MyTask { cb: || false };
-        let mut root = Node::default();
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, MyTask>>::new(),
+            variables: HashMap::new(),
+        };
+        let mytask = MyTask { cb: Box::new(|| false) };
+        let mut root = Node {
+            name: None,
+            is_root_node: false,
+            ntype: NodeTypeTask,
+            task: None,
+            properties: HashMap::new(),
+            continue_on_fail: false,
+        };
         root.ntype = NodeTypeTask;
         root.task = Some(&mytask);
         let (result, _) = run_node_helper(&root, &mut mycontext);
@@ -411,8 +573,11 @@ mod test {
 
     #[test]
     fn returns_true_if_all_tasks_successful_in_series() {
-        let mut mycontext = GlobalContext::default();
-        let mytask = MyTask { cb: || true };
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, _>>::new(),
+            variables: HashMap::new(),
+        };
+        let mytask = MyTask { cb: Box::new(|| true) };
         let mut strvec = vec![];
         let root = make_root_node_with_list(3, &mytask, true, &mut strvec);
         let (result, _) = run_node_helper(&root, &mut mycontext);
@@ -421,14 +586,17 @@ mod test {
 
     #[test]
     fn returns_false_if_one_tasks_fails_in_series() {
-        let mut mycontext = GlobalContext::default();
-        let mytask = MyTask { cb: || true };
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, _>>::new(),
+            variables: HashMap::new(),
+        };
+        let mytask = MyTask { cb: Box::new(|| true) };
         let mut strvec = vec!["a", "b", "c", "d", "e"];
         let mut root = make_root_node_with_list(5, &mytask, true, &mut strvec);
 
         // the third task should fail, so the global
         // context should not have d because d never gets ran
-        let myfailtask = MyTask { cb: || false };
+        let myfailtask = MyTask { cb: Box::new(|| false) };
         if let NodeTypeSeries(ref mut s) = root.ntype {
             s[2].task = Some(&myfailtask);
         }
@@ -444,8 +612,11 @@ mod test {
 
     #[test]
     fn returns_true_if_all_tasks_succeed_in_parallel() {
-        let mut mycontext = GlobalContext::default();
-        let mytask = MyTask { cb: || true };
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, _>>::new(),
+            variables: HashMap::new(),
+        };
+        let mytask = MyTask { cb: Box::new(|| true) };
         let mut strvec = vec!["a", "b", "c", "d", "e"];
         let root = make_root_node_with_list(5, &mytask, false, &mut strvec);
 
@@ -455,12 +626,15 @@ mod test {
 
     #[test]
     fn returns_false_if_one_tasks_fails_in_parallel() {
-        let mut mycontext = GlobalContext::default();
-        let mytask = MyTask { cb: || true };
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, _>>::new(),
+            variables: HashMap::new(),
+        };
+        let mytask = MyTask { cb: Box::new(|| true) };
         let mut strvec = vec!["a", "b", "c", "d", "e"];
         let mut root = make_root_node_with_list(5, &mytask, false, &mut strvec);
 
-        let myfailtask = MyTask { cb: || false };
+        let myfailtask = MyTask { cb: Box::new(|| false) };
         if let NodeTypeParallel(ref mut s) = root.ntype {
             s[2].task = Some(&myfailtask);
         }
@@ -471,11 +645,14 @@ mod test {
     #[test]
     fn parallel_is_not_a_liar() {
         // run in series with a 0.1 second delay on 5 items
-        let mut mycontext = GlobalContext::default();
-        let mytask = MyTask { cb: || {
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, _>>::new(),
+            variables: HashMap::new(),
+        };
+        let mytask = MyTask { cb: Box::new(|| {
             sleep(Duration::from_millis(100));
             true
-        } };
+        }) };
         let mut strvec = vec!["a", "b", "c", "d", "e"];
         let root = make_root_node_with_list(5, &mytask, true, &mut strvec);
         let mut timer = Instant::now();
@@ -486,11 +663,14 @@ mod test {
 
         // now do the same but in parallel. the duration should
         // be about 100ms
-        let mut mycontext = GlobalContext::default();
-        let mytask = MyTask { cb: || {
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, _>>::new(),
+            variables: HashMap::new(),
+        };
+        let mytask = MyTask { cb: Box::new(|| {
             sleep(Duration::from_millis(100));
             true
-        } };
+        }) };
         let mut strvec = vec!["a", "b", "c", "d", "e"];
         let root = make_root_node_with_list(5, &mytask, false, &mut strvec);
         let mut timer = Instant::now();
@@ -519,8 +699,11 @@ mod test {
     // be applied to the global context
     #[test]
     fn nested_parallels_and_series_can_still_modify_context() {
-        let mut mycontext = GlobalContext::default();
-        let mytask = MyTask { cb: || true };
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, _>>::new(),
+            variables: HashMap::new(),
+        };
+        let mytask = MyTask { cb: Box::new(|| true) };
         let mut strvec1 = vec!["", "b", "c", "d", "e"];
         let mut strvec2 = vec!["f", "g", "h", "i", "j"];
         let mut strvec3 = vec!["", "s2", "s3"];
@@ -569,10 +752,11 @@ mod test {
     //   - b
     #[test]
     fn context_diffs_applied_for_series() {
+        #[derive(Clone)]
         struct MyTask1 {}
         impl Task for MyTask1
         {
-            fn run(&self, node: &Node, global_context: &GlobalContext) ->
+            fn run<T: Send + Sync + Clone, U: Task + Clone>(&self, node: &Node<T, U>, global_context: &GlobalContext<T, U>) ->
                 (bool, Option<Vec<ContextDiff>>)
             {
                 let has_a = format!("gc_has_a_{}", global_context.variables.contains_key("a"));
@@ -586,7 +770,10 @@ mod test {
             }
         }
 
-        let mut mycontext = GlobalContext::default();
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, _>>::new(),
+            variables: HashMap::new(),
+        };
         let mytask = MyTask1 {};
         let mut parvec1 = vec!["a"];
         let mut parvec2 = vec!["b"];
@@ -615,10 +802,11 @@ mod test {
     // the output of the abc tasks because they were completed before them
     #[test]
     fn context_diffs_applied_for_nested_parallel() {
+        #[derive(Clone)]
         struct MyTask1 {}
         impl Task for MyTask1
         {
-            fn run(&self, node: &Node, global_context: &GlobalContext) ->
+            fn run<T: Send + Sync + Clone, U: Task + Clone>(&self, node: &Node<T, U>, global_context: &GlobalContext<T, U>) ->
                 (bool, Option<Vec<ContextDiff>>)
             {
                 println!("RUNNING ON NODE: {:?}", node.name);
@@ -636,7 +824,10 @@ mod test {
             }
         }
 
-        let mut mycontext = GlobalContext::default();
+        let mut mycontext = GlobalContext {
+            known_nodes: HashMap::<String, Node<&str, _>>::new(),
+            variables: HashMap::new(),
+        };
         let mytask = MyTask1 {};
         let mut parvec1 = vec!["a", "b", "c"];
         let mut parvec2 = vec!["x", "y", "z"];
