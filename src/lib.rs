@@ -406,6 +406,22 @@ pub fn run_node_helper<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
     )
 }
 
+/// this is a public helper to call `run_node`. it is like `run_node_helper`
+/// but only takes an immutable global context
+pub fn run_node_helper_immut<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
+    node: &Node<'a, T, U>,
+    global_context: &'a GlobalContext<T, U>,
+) -> (bool, Option<Vec<ContextDiff>>)
+{
+    let mut none = None;
+    let some = Some(global_context);
+    run_node(
+        node,
+        &some,
+        &mut none,
+    )
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
