@@ -18,3 +18,7 @@ This library does not contain any code to spawn subshells, or execute programs. 
 a hierarchy of steps, and to run those steps on 1 or more threads as defined by the hierarchy structure.
 
 
+## See also:
+
+- [a library to parse files into node hierarchies](https://github.com/nikita-skobov/abstract-pipeline-parsers)
+- [a reference implementation that uses `abstract-pipeline-runner`](https://github.com/nikita-skobov/abstract-pipeline-runner)
