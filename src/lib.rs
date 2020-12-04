@@ -249,10 +249,15 @@ pub fn run_threads_with_context<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
     nodes: &Vec<Node<'a, T, U>>,
     global_context: &Option<&'a GlobalContext<T, U>>,
 ) -> (bool, Option<Vec<ContextDiff>>) {
-
+    // probably dont need a max limit because rayon handles the threadpool for us
     let joined: Vec<(bool, Option<Vec<ContextDiff>>)> = nodes.par_iter()
         .map(|a| {
             let mut mut_none = None;
+            // concurrent threads cannot modify same
+            // memory location, so we pass none explicitly
+            // however, they will all return their diffs of
+            // what they want the state to be changed to
+            // and then we apply that diff when we collect it
             run_node(a, &global_context, &mut mut_none)
         })
         .collect();
