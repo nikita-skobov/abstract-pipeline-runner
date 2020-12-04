@@ -1,4 +1,4 @@
-use crossbeam_utils::thread;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 /// an abstract concept of a single unit of work
@@ -249,42 +249,29 @@ pub fn run_threads_with_context<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
     nodes: &Vec<Node<'a, T, U>>,
     global_context: &Option<&'a GlobalContext<T, U>>,
 ) -> (bool, Option<Vec<ContextDiff>>) {
-    thread::scope(|scope| {
-        // TODO: maybe add max concurrent threads?
-        let handles = (0..nodes.len()).into_iter()
-            .map(|i| {
-                scope.spawn(move |_| {
-                    // concurrent threads cannot modify same
-                    // memory location, so we pass none explicitly
-                    // however, they will all return their diffs of
-                    // what they want the state to be changed to
-                    // and then we apply that diff when we collect it
-                    let mut mut_none = None;
-                    run_node(&nodes[i], &global_context, &mut mut_none)
-                })
-            });
-        let mut diff_vec = vec![];
-        let mut success = true;
-        let collected = handles.collect::<Vec<_>>();
-        for c in collected {
-            success = match c.join() {
-                Ok(s) => {
-                    match s.1 {
-                        None => (),
-                        Some(diff_v) => {
-                            for diff in diff_v {
-                                diff_vec.push(diff);
-                            }
-                        }
-                    }
-                    s.0 && s.0 == success
-                },
-                _ => false,
-            };
+
+    let joined: Vec<(bool, Option<Vec<ContextDiff>>)> = nodes.par_iter()
+        .map(|a| {
+            let mut mut_none = None;
+            run_node(a, &global_context, &mut mut_none)
+        })
+        .collect();
+    
+    let mut diff_vec = vec![];
+    let mut success = true;
+    for (node_succeeded, context_diffs) in joined {
+        success = node_succeeded && node_succeeded == success;
+        match context_diffs {
+            None => {},
+            Some(diffs) => {
+                for diff in diffs {
+                    diff_vec.push(diff);
+                }
+            }
         }
-        let diff_vec_opt = if diff_vec.len() > 0 { Some(diff_vec) } else { None };
-        (success, diff_vec_opt)
-    }).unwrap()
+    }
+    let diff_vec_opt = if diff_vec.len() > 0 { Some(diff_vec) } else { None };
+    (success, diff_vec_opt)
 }
 
 pub fn run_node_parallel<'a, T: Send + Sync + Clone, U: Task<T> + Clone>(
